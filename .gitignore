@@ -22,3 +22,8 @@ Thumbs.db
 
 # Submodules (if not needed)
 automation
+
+# Agent/plugin noise
+.agents/
+skills-lock.json
+.specify/integrations/codex*
