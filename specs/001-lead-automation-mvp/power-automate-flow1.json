@@ -1,0 +1,413 @@
+{
+  "definition": {
+    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+    "contentVersion": "1.0.0.0",
+    "triggers": {
+      "When_an_HTTP_request_is_received": {
+        "type": "Request",
+        "kind": "Http",
+        "inputs": {
+          "method": "POST",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "name": { "type": "string" },
+              "company": { "type": "string" },
+              "email": { "type": "string" },
+              "message": { "type": "string" }
+            },
+            "required": ["name", "company", "email", "message"]
+          }
+        }
+      }
+    },
+    "actions": {
+      "Receive_&_Store_Lead": {
+        "type": "Scope",
+        "actions": {
+          "ExtractEmailDomain": {
+            "type": "Compose",
+            "inputs": "@split(triggerBody()?['email'], '@')[1]",
+            "runAfter": {}
+          },
+          "InitStepHistory": {
+            "type": "Compose",
+            "inputs": "[{\"stage\":\"Received\",\"timestamp\":\"@{utcNow()}\",\"status\":\"success\",\"detail\":null}]",
+            "runAfter": {
+              "ExtractEmailDomain": ["Succeeded"]
+            }
+          },
+          "CreateLeadRecord": {
+            "type": "ApiConnection",
+            "inputs": {
+              "host": { "connection": { "name": "@parameters('$connections')['shared_sharepointonline']['connectionId']" } },
+              "method": "post",
+              "path": "/datasets/@{encodeURIComponent(encodeURIComponent('SHAREPOINT_SITE_URL'))}/tables/@{encodeURIComponent(encodeURIComponent('SHAREPOINT_LIST_ID'))}/items",
+              "body": {
+                "Title": "@triggerBody()?['name']",
+                "Company": "@triggerBody()?['company']",
+                "Email": "@triggerBody()?['email']",
+                "Message": "@triggerBody()?['message']",
+                "EmailDomain": "@outputs('ExtractEmailDomain')",
+                "ProcessingStatus": { "Value": "Received" },
+                "EnrichmentStatus": { "Value": "Pending" },
+                "NotificationStatus": { "Value": "Pending" },
+                "ErrorFlag": false,
+                "StepHistory": "@outputs('InitStepHistory')"
+              }
+            },
+            "runAfter": {
+              "InitStepHistory": ["Succeeded"]
+            }
+          },
+          "SaveItemID": {
+            "type": "Compose",
+            "inputs": "@outputs('CreateLeadRecord')?['body/ID']",
+            "runAfter": {
+              "CreateLeadRecord": ["Succeeded"]
+            }
+          }
+        },
+        "runAfter": {}
+      },
+      "Enrich_with_External_Data": {
+        "type": "Scope",
+        "actions": {
+          "CallEnrichmentAPI": {
+            "type": "Http",
+            "inputs": {
+              "method": "GET",
+              "uri": "https://companyenrichment.abstractapi.com/v1/?api_key=ABSTRACT_API_KEY_REDACTED&domain=@{outputs('ExtractEmailDomain')}"
+            },
+            "retryPolicy": {
+              "type": "exponential",
+              "count": 2,
+              "interval": "PT10S"
+            },
+            "runAfter": {}
+          },
+          "ParseEnrichmentResponse": {
+            "type": "ParseJson",
+            "inputs": {
+              "content": "@body('CallEnrichmentAPI')",
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "domain": { "type": "string" },
+                  "country": { "type": "string" },
+                  "city": { "type": "string" },
+                  "industry": { "type": "string" },
+                  "employees_count": { "type": "string" },
+                  "year_founded": { "type": "integer" }
+                }
+              }
+            },
+            "runAfter": {
+              "CallEnrichmentAPI": ["Succeeded"]
+            }
+          },
+          "UpdateLeadWithEnrichment": {
+            "type": "ApiConnection",
+            "inputs": {
+              "host": { "connection": { "name": "@parameters('$connections')['shared_sharepointonline']['connectionId']" } },
+              "method": "patch",
+              "path": "/datasets/@{encodeURIComponent(encodeURIComponent('SHAREPOINT_SITE_URL'))}/tables/@{encodeURIComponent(encodeURIComponent('SHAREPOINT_LIST_ID'))}/items/@{outputs('SaveItemID')}",
+              "body": {
+                "Title": "@triggerBody()?['name']",
+                "EnrichmentCompany": "@body('ParseEnrichmentResponse')?['name']",
+                "EnrichmentIndustry": "@body('ParseEnrichmentResponse')?['industry']",
+                "EnrichmentEmployees": "@body('ParseEnrichmentResponse')?['employees_count']",
+                "EnrichmentLocation": "@{body('ParseEnrichmentResponse')?['city']}, @{body('ParseEnrichmentResponse')?['country']}",
+                "EnrichmentStatus": { "Value": "Complete" },
+                "ProcessingStatus": { "Value": "Enriched" },
+                "StepHistory": "@{outputs('CreateLeadRecord')?['body/StepHistory']},{\"stage\":\"Enriched\",\"timestamp\":\"@{utcNow()}\",\"status\":\"success\",\"detail\":\"Enrichment data received\"}"
+              }
+            },
+            "runAfter": {
+              "ParseEnrichmentResponse": ["Succeeded"]
+            }
+          }
+        },
+        "runAfter": {
+          "Receive_&_Store_Lead": ["Succeeded"]
+        }
+      },
+      "Handle_Enrichment_Failure": {
+        "type": "Scope",
+        "actions": {
+          "MarkEnrichmentFailed": {
+            "type": "ApiConnection",
+            "inputs": {
+              "host": { "connection": { "name": "@parameters('$connections')['shared_sharepointonline']['connectionId']" } },
+              "method": "patch",
+              "path": "/datasets/@{encodeURIComponent(encodeURIComponent('SHAREPOINT_SITE_URL'))}/tables/@{encodeURIComponent(encodeURIComponent('SHAREPOINT_LIST_ID'))}/items/@{outputs('SaveItemID')}",
+              "body": {
+                "Title": "@triggerBody()?['name']",
+                "EnrichmentStatus": { "Value": "Failed" },
+                "ProcessingStatus": { "Value": "Enriched" },
+                "ErrorFlag": true,
+                "ErrorSummary": "Enrichment API failed or timed out",
+                "StepHistory": "@{outputs('CreateLeadRecord')?['body/StepHistory']},{\"stage\":\"Enriched\",\"timestamp\":\"@{utcNow()}\",\"status\":\"failed\",\"detail\":\"Enrichment API unavailable\"}"
+              }
+            },
+            "runAfter": {}
+          }
+        },
+        "runAfter": {
+          "Enrich_with_External_Data": ["Failed", "TimedOut"]
+        }
+      },
+      "Classify_with_AI": {
+        "type": "Scope",
+        "actions": {
+          "BuildAIPrompt": {
+            "type": "Compose",
+            "inputs": "Lead Name: @{triggerBody()?['name']}\nCompany: @{triggerBody()?['company']}\nEmail: @{triggerBody()?['email']}\nMessage: @{triggerBody()?['message']}\n\nEnrichment Data:\nIndustry: @{outputs('UpdateLeadWithEnrichment')?['body/EnrichmentIndustry']}\nEmployees: @{outputs('UpdateLeadWithEnrichment')?['body/EnrichmentEmployees']}\nLocation: @{outputs('UpdateLeadWithEnrichment')?['body/EnrichmentLocation']}",
+            "runAfter": {}
+          },
+          "CallOpenAI": {
+            "type": "Http",
+            "inputs": {
+              "method": "POST",
+              "uri": "https://api.openai.com/v1/chat/completions",
+              "headers": {
+                "Content-Type": "application/json",
+                "Authorization": "Bearer OPENAI_API_KEY_REDACTED"
+              },
+              "body": {
+                "model": "gpt-5.4-mini",
+                "messages": [
+                  {
+                    "role": "system",
+                    "content": "You are a lead classification assistant. Analyse the following lead submission and enrichment data, then return a JSON object with exactly these fields:\n\n{\"category\": \"hot\" | \"warm\" | \"cold\", \"summary\": \"1-2 sentence intent summary\"}\n\nClassification rules:\n- HOT: Clear buying intent, specific product/service request, urgency\n- WARM: General interest, exploring options, no urgency\n- COLD: Vague inquiry, spam-like, no clear business intent\n\nReturn ONLY valid JSON, no markdown, no explanation."
+                  },
+                  {
+                    "role": "user",
+                    "content": "@outputs('BuildAIPrompt')"
+                  }
+                ],
+                "temperature": 0.3,
+                "response_format": { "type": "json_object" }
+              }
+            },
+            "retryPolicy": {
+              "type": "exponential",
+              "count": 2,
+              "interval": "PT10S"
+            },
+            "runAfter": {
+              "BuildAIPrompt": ["Succeeded"]
+            }
+          },
+          "ParseAIResponse": {
+            "type": "ParseJson",
+            "inputs": {
+              "content": "@json(body('CallOpenAI')?['choices'][0]?['message']?['content'])",
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "category": { "type": "string" },
+                  "summary": { "type": "string" }
+                }
+              }
+            },
+            "runAfter": {
+              "CallOpenAI": ["Succeeded"]
+            }
+          },
+          "UpdateLeadWithAI": {
+            "type": "ApiConnection",
+            "inputs": {
+              "host": { "connection": { "name": "@parameters('$connections')['shared_sharepointonline']['connectionId']" } },
+              "method": "patch",
+              "path": "/datasets/@{encodeURIComponent(encodeURIComponent('SHAREPOINT_SITE_URL'))}/tables/@{encodeURIComponent(encodeURIComponent('SHAREPOINT_LIST_ID'))}/items/@{outputs('SaveItemID')}",
+              "body": {
+                "Title": "@triggerBody()?['name']",
+                "AICategory": { "Value": "@body('ParseAIResponse')?['category']" },
+                "AISummary": "@body('ParseAIResponse')?['summary']",
+                "ProcessingStatus": { "Value": "AI Processed" },
+                "StepHistory": "@{outputs('CreateLeadRecord')?['body/StepHistory']},{\"stage\":\"Enriched\",\"timestamp\":\"@{utcNow()}\",\"status\":\"success\",\"detail\":\"Enrichment complete\"},{\"stage\":\"AI Processed\",\"timestamp\":\"@{utcNow()}\",\"status\":\"success\",\"detail\":\"Classified as @{body('ParseAIResponse')?['category']}\"}"
+              }
+            },
+            "runAfter": {
+              "ParseAIResponse": ["Succeeded"]
+            }
+          }
+        },
+        "runAfter": {
+          "Enrich_with_External_Data": ["Succeeded"],
+          "Handle_Enrichment_Failure": ["Succeeded", "Skipped"]
+        }
+      },
+      "Handle_AI_Failure": {
+        "type": "Scope",
+        "actions": {
+          "MarkAIFailed": {
+            "type": "ApiConnection",
+            "inputs": {
+              "host": { "connection": { "name": "@parameters('$connections')['shared_sharepointonline']['connectionId']" } },
+              "method": "patch",
+              "path": "/datasets/@{encodeURIComponent(encodeURIComponent('SHAREPOINT_SITE_URL'))}/tables/@{encodeURIComponent(encodeURIComponent('SHAREPOINT_LIST_ID'))}/items/@{outputs('SaveItemID')}",
+              "body": {
+                "Title": "@triggerBody()?['name']",
+                "AICategory": { "Value": "unknown" },
+                "AISummary": "AI classification unavailable",
+                "ProcessingStatus": { "Value": "AI Processed" },
+                "ErrorFlag": true,
+                "ErrorSummary": "OpenAI API failed or timed out"
+              }
+            },
+            "runAfter": {}
+          }
+        },
+        "runAfter": {
+          "Classify_with_AI": ["Failed", "TimedOut"]
+        }
+      },
+      "Send_Outlook_Notification": {
+        "type": "Scope",
+        "actions": {
+          "CheckIfHotLead": {
+            "type": "If",
+            "expression": {
+              "and": [
+                {
+                  "equals": ["@body('ParseAIResponse')?['category']", "hot"]
+                }
+              ]
+            },
+            "actions": {
+              "SetHotSubject": {
+                "type": "Compose",
+                "inputs": "🔴 HOT LEAD: @{triggerBody()?['name']} from @{triggerBody()?['company']}"
+              }
+            },
+            "else": {
+              "actions": {
+                "SetNormalSubject": {
+                  "type": "Compose",
+                  "inputs": "New Lead: @{triggerBody()?['name']} from @{triggerBody()?['company']}"
+                }
+              }
+            },
+            "runAfter": {}
+          },
+          "SendEmail": {
+            "type": "ApiConnection",
+            "inputs": {
+              "host": { "connection": { "name": "@parameters('$connections')['shared_office365']['connectionId']" } },
+              "method": "post",
+              "path": "/v2/Mail",
+              "body": {
+                "To": "development@datainseyets.com.au",
+                "Subject": "@{coalesce(outputs('SetHotSubject'), outputs('SetNormalSubject'))}",
+                "Body": "<h2>New Lead Received</h2><table><tr><td><strong>Name:</strong></td><td>@{triggerBody()?['name']}</td></tr><tr><td><strong>Company:</strong></td><td>@{triggerBody()?['company']}</td></tr><tr><td><strong>Email:</strong></td><td>@{triggerBody()?['email']}</td></tr></table><h3>AI Classification</h3><p><strong>Category:</strong> @{body('ParseAIResponse')?['category']}</p><p><strong>Summary:</strong> @{body('ParseAIResponse')?['summary']}</p><h3>Enrichment Data</h3><table><tr><td><strong>Industry:</strong></td><td>@{outputs('UpdateLeadWithEnrichment')?['body/EnrichmentIndustry']}</td></tr><tr><td><strong>Employees:</strong></td><td>@{outputs('UpdateLeadWithEnrichment')?['body/EnrichmentEmployees']}</td></tr><tr><td><strong>Location:</strong></td><td>@{outputs('UpdateLeadWithEnrichment')?['body/EnrichmentLocation']}</td></tr></table><h3>Original Message</h3><p>@{triggerBody()?['message']}</p><hr><p><em>Processed by LeadFlow for Borg</em></p>",
+                "Importance": "Normal"
+              }
+            },
+            "runAfter": {
+              "CheckIfHotLead": ["Succeeded"]
+            }
+          },
+          "UpdateLeadNotified": {
+            "type": "ApiConnection",
+            "inputs": {
+              "host": { "connection": { "name": "@parameters('$connections')['shared_sharepointonline']['connectionId']" } },
+              "method": "patch",
+              "path": "/datasets/@{encodeURIComponent(encodeURIComponent('SHAREPOINT_SITE_URL'))}/tables/@{encodeURIComponent(encodeURIComponent('SHAREPOINT_LIST_ID'))}/items/@{outputs('SaveItemID')}",
+              "body": {
+                "Title": "@triggerBody()?['name']",
+                "NotificationStatus": { "Value": "Sent" },
+                "ProcessingStatus": { "Value": "Notified" },
+                "StepHistory": "@{outputs('CreateLeadRecord')?['body/StepHistory']},{\"stage\":\"Enriched\",\"timestamp\":\"@{utcNow()}\",\"status\":\"success\",\"detail\":\"Complete\"},{\"stage\":\"AI Processed\",\"timestamp\":\"@{utcNow()}\",\"status\":\"success\",\"detail\":\"Classified\"},{\"stage\":\"Notified\",\"timestamp\":\"@{utcNow()}\",\"status\":\"success\",\"detail\":\"Email sent\"}"
+              }
+            },
+            "runAfter": {
+              "SendEmail": ["Succeeded"]
+            }
+          }
+        },
+        "runAfter": {
+          "Classify_with_AI": ["Succeeded"],
+          "Handle_AI_Failure": ["Succeeded", "Skipped"]
+        }
+      },
+      "Finalize": {
+        "type": "Scope",
+        "actions": {
+          "UpdateLeadComplete": {
+            "type": "ApiConnection",
+            "inputs": {
+              "host": { "connection": { "name": "@parameters('$connections')['shared_sharepointonline']['connectionId']" } },
+              "method": "patch",
+              "path": "/datasets/@{encodeURIComponent(encodeURIComponent('SHAREPOINT_SITE_URL'))}/tables/@{encodeURIComponent(encodeURIComponent('SHAREPOINT_LIST_ID'))}/items/@{outputs('SaveItemID')}",
+              "body": {
+                "Title": "@triggerBody()?['name']",
+                "ProcessingStatus": { "Value": "Complete" }
+              }
+            },
+            "runAfter": {}
+          },
+          "RespondSuccess": {
+            "type": "Response",
+            "inputs": {
+              "statusCode": 200,
+              "headers": {
+                "Content-Type": "application/json"
+              },
+              "body": {
+                "status": "processed",
+                "id": "@outputs('SaveItemID')"
+              }
+            },
+            "runAfter": {
+              "UpdateLeadComplete": ["Succeeded"]
+            }
+          }
+        },
+        "runAfter": {
+          "Send_Outlook_Notification": ["Succeeded"]
+        }
+      },
+      "Global_Error_Handler": {
+        "type": "Response",
+        "inputs": {
+          "statusCode": 500,
+          "headers": {
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "status": "error",
+            "message": "Pipeline failed"
+          }
+        },
+        "runAfter": {
+          "Finalize": ["Failed"]
+        }
+      }
+    },
+    "parameters": {
+      "$connections": {
+        "defaultValue": {},
+        "type": "Object"
+      }
+    }
+  },
+  "parameters": {
+    "$connections": {
+      "value": {
+        "shared_sharepointonline": {
+          "connectionId": "",
+          "connectionName": "shared_sharepointonline",
+          "id": "/providers/Microsoft.PowerApps/apis/shared_sharepointonline"
+        },
+        "shared_office365": {
+          "connectionId": "",
+          "connectionName": "shared_office365",
+          "id": "/providers/Microsoft.PowerApps/apis/shared_office365"
+        }
+      }
+    }
+  }
+}
