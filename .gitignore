@@ -27,3 +27,5 @@ automation
 .agents/
 skills-lock.json
 .specify/integrations/codex*
+.pa-auth.json
+.claude/skills/agent-browser/
