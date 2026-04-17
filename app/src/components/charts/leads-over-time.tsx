@@ -10,6 +10,7 @@ import {
 } from 'recharts'
 import { type Lead } from '@/lib/types'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { InfoTip } from '@/components/info-tip'
 
 type LeadsOverTimeProps = {
   leads: Lead[]
@@ -45,7 +46,10 @@ export function LeadsOverTime({ leads }: LeadsOverTimeProps) {
   return (
     <Card>
       <CardHeader className='pb-2'>
-        <CardTitle className='text-base'>Leads Over Time (Last 7 Days)</CardTitle>
+        <CardTitle className='flex items-center gap-2 text-base'>
+          Leads Over Time (Last 7 Days)
+          <InfoTip text='Daily submission volume from the form. The amber overlay highlights leads classified as hot — useful for spotting bursts of high-intent traffic.' />
+        </CardTitle>
       </CardHeader>
       <CardContent>
         <div className='h-64 w-full'>

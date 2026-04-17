@@ -1,6 +1,7 @@
 import { Pie, PieChart, ResponsiveContainer, Tooltip } from 'recharts'
 import { type Lead } from '@/lib/types'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { InfoTip } from '@/components/info-tip'
 
 type TemperatureDonutProps = {
   leads: Lead[]
@@ -24,7 +25,10 @@ export function TemperatureDonut({ leads }: TemperatureDonutProps) {
   return (
     <Card>
       <CardHeader className='pb-2'>
-        <CardTitle className='text-base'>Lead Temperature Mix</CardTitle>
+        <CardTitle className='flex items-center gap-2 text-base'>
+          Lead Temperature Mix
+          <InfoTip text='OpenAI gpt-5.4-mini classifies each lead as hot, warm, or cold based on the message + enrichment data. "Unknown" means the AI step failed and the run-after branch defaulted the value.' />
+        </CardTitle>
       </CardHeader>
       <CardContent>
         <div className='relative h-64 w-full'>

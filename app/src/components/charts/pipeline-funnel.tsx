@@ -9,6 +9,7 @@ import {
 } from 'recharts'
 import { type Lead } from '@/lib/types'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
+import { InfoTip } from '@/components/info-tip'
 
 type PipelineFunnelProps = {
   leads: Lead[]
@@ -74,7 +75,10 @@ export function PipelineFunnel({ leads }: PipelineFunnelProps) {
   return (
     <Card>
       <CardHeader className='pb-2'>
-        <CardTitle className='text-base'>Pipeline Funnel</CardTitle>
+        <CardTitle className='flex items-center gap-2 text-base'>
+          Pipeline Funnel
+          <InfoTip text='How many leads have reached each Power Automate stage. A drop between stages signals an enrichment, AI, or notification failure caught by the run-after error handlers.' />
+        </CardTitle>
       </CardHeader>
       <CardContent className='flex flex-col gap-4'>
         <div className='h-64 w-full'>
