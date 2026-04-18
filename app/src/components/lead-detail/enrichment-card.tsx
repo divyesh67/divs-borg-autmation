@@ -6,7 +6,11 @@ type EnrichmentCardProps = {
 }
 
 export function EnrichmentCard({ lead }: EnrichmentCardProps) {
-  const unavailable = lead.enrichmentStatus === 'Failed'
+  const failed = lead.enrichmentStatus === 'Failed'
+  const hasAnyData = Boolean(
+    lead.enrichmentCompany || lead.enrichmentIndustry || lead.enrichmentEmployees
+  )
+  const noMatch = !failed && !hasAnyData
 
   return (
     <Card>
@@ -14,8 +18,13 @@ export function EnrichmentCard({ lead }: EnrichmentCardProps) {
         <CardTitle className='text-base'>Enrichment</CardTitle>
       </CardHeader>
       <CardContent className='flex flex-col gap-1 text-sm'>
-        {unavailable ? (
-          <p className='text-muted-foreground'>Enrichment unavailable.</p>
+        {failed ? (
+          <p className='text-muted-foreground'>Enrichment unavailable — Abstract API call failed.</p>
+        ) : noMatch ? (
+          <p className='text-muted-foreground'>
+            No enrichment match for <span className='font-medium'>{lead.emailDomain || 'this domain'}</span> in Abstract&apos;s
+            company database. Common for smaller / regional companies.
+          </p>
         ) : (
           <>
             <p><span className='font-medium'>Company:</span> {lead.enrichmentCompany ?? '—'}</p>
